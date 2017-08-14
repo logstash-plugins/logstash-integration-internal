@@ -51,7 +51,11 @@ module LogStash; module Integrations; module Internal
     end
 
     def internal_receive(events)
-      events.each {|e| @queue << e.clone }
+      events.each do |e| 
+        clone = e.clone
+        decorate(clone)
+        @queue << clone
+      end
     end
 
     def stop
