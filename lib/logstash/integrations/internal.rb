@@ -62,7 +62,7 @@ module LogStash; module Integrations; module Internal
     end
 
     def running?
-      @running.get()
+      @running && @running.get()
     end
 
     # Returns false if the receive failed due to a stopping input
@@ -94,13 +94,13 @@ module LogStash; module Integrations; module Internal
     def register
       # noop, needed to obey plugin API
     end
-
+    BLOCKED_LOG_MESSAGE = "Internal output to address waiting for listener to start"
     def multi_receive(events)
       @send_to.each do |address|
         while !Internal.send_to(address, events)
           sleep 1
           @logger.info(
-            "Internal output to address waiting for listener to start",
+            BLOCKED_LOG_MESSAGE,
             :destination_address => address,
             :registered_addresses => Internal.addresses_by_run_state
           )
