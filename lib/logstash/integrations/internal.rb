@@ -1,11 +1,17 @@
+require 'thread'
+
 module LogStash; module Integrations; module Internal
+  require 'logstash/integrations/internal/input'
+  require 'logstash/integrations/internal/output'
+
   include ::LogStash::Util::Loggable
   
-  INPUTS = java.util.concurrent.ConcurrentHashMap.new()
+  ADDRESS_TO_INPUT = java.util.concurrent.ConcurrentHashMap.new()
+  INPUT_SENDERS = java.util.concurrent.ConcurrentHashMap.new()
 
   def self.addresses_by_run_state
     result = {:running => [], :not_running => []}
-    INPUTS.forEach do |address, input| 
+    ADDRESS_TO_INPUT.forEach do |address, input| 
       key = input.running? ? :running : :not_running
       result[key] << address
     end
@@ -14,11 +20,32 @@ module LogStash; module Integrations; module Internal
 
   # Only really useful for tests
   def self.reset!
-    INPUTS.clear
+    ADDRESS_TO_INPUT.clear
+  end
+
+  def self.register_sender(output, addresses)
+    addresses.each do |address|
+      INPUT_SENDERS.compute(address) do |key, value|
+        output_list = value || java.util.concurrent.ConcurrentHashMap.newKeySet()
+        output_list << output
+        output_list
+      end
+    end
+  end
+
+  def self.unregister_sender(output, addresses)
+    addresses.each do |address|
+      INPUT_SENDERS.computeIfPresent(address) do |key, output_list|
+        output_list.delete output
+
+        # Return nil to delete the key if possible to prevent a leak
+        output_list.empty? ? nil : output_list
+      end
+    end
   end
 
   def self.send_to(address, events)
-    input = INPUTS.get(address);
+    input = ADDRESS_TO_INPUT.get(address);
     # Internal receive returns a boolean indicating whether the receive was successful or not
     # If the result is false then the sender will retry.
     # If this were not here we'd have a race where an input could be stopped after the CHM.get above
@@ -31,84 +58,13 @@ module LogStash; module Integrations; module Internal
 
   # Return true if nothing was listening previously
   def self.listen(address, internal_input)
-    return INPUTS.putIfAbsent(address, internal_input).nil?
+    return ADDRESS_TO_INPUT.putIfAbsent(address, internal_input).nil?
   end
 
   # Return true if the input was actually listening
   def self.unlisten(address, internal_input)
-    INPUTS.remove(address, internal_input)
-  end
+    removed = false
 
-  class Input < ::LogStash::Inputs::Base
-    config_name "internal"
-
-    config :address, :validate => :string, :required => true
-
-    def register
-      # May as well set this up here, writers won't do anything until
-      # @running is set to false
-      @running = java.util.concurrent.atomic.AtomicBoolean.new(false)
-      listen_successful = Internal.listen(@address, self)
-      puts "LSUCC #{listen_successful}"
-      if !listen_successful
-        raise ::LogStash::ConfigurationError, "Internal input at '#{@address}' already bound! Addresses must be globally unique across pipelines."
-      end
-    end
-
-    def run(queue)
-      @queue = queue
-      @running.set(true)
-
-      while @running.get()
-        sleep 0.5
-      end
-    end
-
-    def running?
-      @running && @running.get()
-    end
-
-    # Returns false if the receive failed due to a stopping input
-    # To understand why this value is useful see Internal.send_to
-    def internal_receive(events)
-      return false if !@running.get()
-
-      events.each do |e| 
-        clone = e.clone
-        decorate(clone)
-        @queue << clone
-      end
-
-      return true
-    end
-
-    def stop
-      # We stop receiving events before we unlisten to prevent races
-      @running.set(false) if @running # If register wasn't yet called, no @running!
-      Internal.unlisten(@address, self)
-    end
-  end
-
-  class Output < ::LogStash::Outputs::Base
-    config_name "internal"
-
-    config :send_to, :validate => :string, :required => true, :list => true
-
-    def register
-      # noop, needed to obey plugin API
-    end
-    BLOCKED_LOG_MESSAGE = "Internal output to address waiting for listener to start"
-    def multi_receive(events)
-      @send_to.each do |address|
-        while !Internal.send_to(address, events)
-          sleep 1
-          @logger.info(
-            BLOCKED_LOG_MESSAGE,
-            :destination_address => address,
-            :registered_addresses => Internal.addresses_by_run_state
-          )
-        end
-      end
-    end
+    ADDRESS_TO_INPUT.remove(address, internal_input)
   end
 end; end; end
