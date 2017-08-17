@@ -5,14 +5,14 @@ class ::LogStash::Integrations::Internal::Output < ::LogStash::Outputs::Base
 
   def register
     ::LogStash::Integrations::Internal.register_sender(self, @send_to)
-    @running = java.util.concurrent.atomic.AtomicBoolean.new(true)
   end
 
   NO_LISTENER_LOG_MESSAGE = "Internal output to address waiting for listener to start"
   def multi_receive(events)
     @send_to.each do |address|
-      while @running.get() && !::LogStash::Integrations::Internal.send_to(address, events)
-        sleep 1
+      while !::LogStash::Integrations::Internal.send_to(address, events)
+        break if pipeline_shutting_down?
+        sleep 2
         @logger.info(
           NO_LISTENER_LOG_MESSAGE,
           :destination_address => address,
@@ -22,8 +22,11 @@ class ::LogStash::Integrations::Internal::Output < ::LogStash::Outputs::Base
     end
   end
 
+  def pipeline_shutting_down?
+    execution_context.pipeline.inputs.all? {|input| input.stop? == true }
+  end
+  
   def close
-    @running.set(false) if @running
     ::LogStash::Integrations::Internal.unregister_sender(self, @send_to)
   end
 end
