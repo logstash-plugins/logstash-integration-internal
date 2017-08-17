@@ -31,8 +31,7 @@ module LogStash; module Integrations; module Internal
 
   # Return true if nothing was listening previously
   def self.listen(address, internal_input)
-    mapped_input = INPUTS.putIfAbsent(address, internal_input).nil?
-    return mapped_input == internal_input
+    return INPUTS.putIfAbsent(address, internal_input).nil?
   end
 
   # Return true if the input was actually listening
@@ -49,7 +48,11 @@ module LogStash; module Integrations; module Internal
       # May as well set this up here, writers won't do anything until
       # @running is set to false
       @running = java.util.concurrent.atomic.AtomicBoolean.new(false)
-      Internal.listen(@address, self)
+      listen_successful = Internal.listen(@address, self)
+      puts "LSUCC #{listen_successful}"
+      if !listen_successful
+        raise ::LogStash::ConfigurationError, "Internal input at '#{@address}' already bound! Addresses must be globally unique across pipelines."
+      end
     end
 
     def run(queue)
